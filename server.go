@@ -32,7 +32,8 @@ type Backend struct {
 }
 
 type ServerPool struct {
-	backends ServerHeap
+	backends ServerHeap //alive backends only
+	allBackends []*Backend
 	mux  sync.Mutex
 }
 
@@ -50,7 +51,11 @@ func (b *Backend) IsAlive() (alive bool) {
 }
 
 func (s *ServerPool) AddBackend(backend *Backend) {
-	s.backends = append(s.backends, backend)
+	s.mux.Lock()
+	defer s.mux.Unlock()
+
+	s.allBackends = append(s.allBackends, backend)
+	heap.Push(&s.backends,backend)
 }
 
 
@@ -70,9 +75,24 @@ func (s *ServerPool) GetNextPeer() *Backend {
 }
 
 func (s *ServerPool) MarkBackendStatus(backendUrl *url.URL, alive bool) {
-	for _, b := range s.backends {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+
+	for _, b := range s.allBackends {
 		if b.URL.String() == backendUrl.String() {
-			b.SetAlive(alive)
+			if b.Alive==alive{
+				return
+			}
+
+			b.Alive = alive
+
+			if !alive {
+				log.Printf("removing %s from heap(zombie)\n",b.URL)
+				heap.Remove(&s.backends,b.index)
+			}else{
+				log.Printf("adding %s back to heap (resurrected)\n",b.URL)
+				heap.Push(&s.backends,b) //heapify handles the index
+			}
 			break
 		}
 	}
@@ -90,10 +110,12 @@ func isBackendAlive(u *url.URL) bool {
 }
 
 func (s *ServerPool) HealthCheck() {
-	for _, b := range s.backends {
-		status := "up"
+	for _, b := range s.allBackends {
+		
 		alive := isBackendAlive(b.URL)
-		b.SetAlive(alive)
+		s.MarkBackendStatus(b.URL,alive)
+		status := "up"
+		
 		if !alive {
 			status = "down"
 		}
