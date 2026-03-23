@@ -12,9 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
-	
 )
 
 const (
@@ -160,7 +158,10 @@ func lb(w http.ResponseWriter, r *http.Request) {
 		defer func(){ //load decrement after function is finished
 			serverPool.mux.Lock()
 			peer.ActiveConns--
-			heap.Fix(&serverPool.backends,peer.index)
+			if peer.index>=0{
+				heap.Fix(&serverPool.backends,peer.index)
+			}
+			
 			serverPool.mux.Unlock()
 		}()
 
