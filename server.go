@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"container/heap"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	
 )
 
 const (
@@ -25,11 +27,13 @@ type Backend struct {
 	Alive        bool
 	mux          sync.RWMutex
 	ReverseProxy *httputil.ReverseProxy
+	ActiveConns int
+	index int
 }
 
 type ServerPool struct {
-	backends []*Backend
-	current  uint64
+	backends ServerHeap
+	mux  sync.Mutex
 }
 
 func (b *Backend) SetAlive(alive bool) {
@@ -49,25 +53,20 @@ func (s *ServerPool) AddBackend(backend *Backend) {
 	s.backends = append(s.backends, backend)
 }
 
-func (s *ServerPool) NextIndex() int {
-	return int(atomic.AddUint64(&s.current, uint64(1)) % uint64(len(s.backends)))
-}
+
 
 func (s *ServerPool) GetNextPeer() *Backend {
-	next := s.NextIndex()
-	l := len(s.backends) + next
-
-	for i := next; i < l; i++ {
-		idx := i % len(s.backends)
-
-		if s.backends[idx].IsAlive() {
-			if i != next {
-				atomic.StoreUint64(&s.current, uint64(idx))
-			}
-			return s.backends[idx]
-		}
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	
+	if len(s.backends)==0{
+		return nil
 	}
-	return nil
+
+	best := s.backends[0]
+	best.ActiveConns++
+	heap.Fix(&s.backends,0)
+	return best
 }
 
 func (s *ServerPool) MarkBackendStatus(backendUrl *url.URL, alive bool) {
@@ -136,10 +135,47 @@ func lb(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if peer := serverPool.GetNextPeer(); peer != nil {
+		defer func(){ //load decrement after function is finished
+			serverPool.mux.Lock()
+			peer.ActiveConns--
+			heap.Fix(&serverPool.backends,peer.index)
+			serverPool.mux.Unlock()
+		}()
+
 		peer.ReverseProxy.ServeHTTP(w, r)
 		return
 	}
 	http.Error(w, "Service not available", http.StatusServiceUnavailable)
+}
+
+//heap for sort out alive backends to reduce search surface
+
+type ServerHeap []*Backend
+
+func(h ServerHeap) Len() int{
+	return len(h)
+}
+
+func ( h ServerHeap) Less(i,j int) bool{ //min heap -> least server load
+	return h[i].ActiveConns<h[j].ActiveConns
+}
+
+func(h ServerHeap) Swap(i,j int){
+	h[i],h[j]=h[j],h[i]
+	h[i].index =i
+	h[j].index =j
+}
+
+func(h *ServerHeap) Push(x any){
+	*h = append(*h, x.(*Backend))
+}
+
+func (h *ServerHeap) Pop() any{
+	old :=*h
+	n := len(old)
+	item:= old[n-1]
+	*h = old[0:n-1]
+	return item
 }
 
 var serverPool ServerPool
