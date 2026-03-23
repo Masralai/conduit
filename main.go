@@ -104,14 +104,12 @@ func (s *ServerPool) HealthCheck() {
 
 func healthCheck() {
 	t := time.NewTicker(time.Second * 20)
-	for {
-		select {
-		case <-t.C:
-			log.Println("starting health check ...")
-			serverPool.HealthCheck()
-			log.Println("health check completed")
-		}
+	for range t.C {
+		log.Println("starting health check ...")
+		serverPool.HealthCheck()
+		log.Println("health check completed")
 	}
+
 }
 
 func GetAttemptsFromContext(r *http.Request) int {
@@ -171,11 +169,9 @@ func main() {
 			log.Printf("[%s] %s\n", serverUrl.Host, e.Error())
 			retries := GetRetryFromContext(req)
 			if retries < 3 {
-				select {
-				case <-time.After(10 * time.Millisecond):
-					ctx := context.WithValue(req.Context(), Retry, retries+1)
-					proxy.ServeHTTP(res, req.WithContext(ctx))
-				}
+				<-time.After(10 * time.Millisecond) //Receiving from a Channel
+				ctx := context.WithValue(req.Context(), Retry, retries+1)
+				proxy.ServeHTTP(res, req.WithContext(ctx))
 			}
 
 			serverPool.MarkBackendStatus(serverUrl, false)
